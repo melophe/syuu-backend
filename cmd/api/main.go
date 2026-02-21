@@ -41,7 +41,8 @@ func main() {
 
 	// Create services
 	authService := service.NewAuthService(userRepo, cfg)
-	practiceService := service.NewPracticeService(itemRepo, srsRepo, answerRepo)
+	generatorService := service.NewGeneratorService(cfg)
+	practiceService := service.NewPracticeService(itemRepo, srsRepo, answerRepo, generatorService)
 	statsService := service.NewStatsService(answerRepo, srsRepo)
 
 	// Create handlers

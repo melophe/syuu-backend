@@ -19,11 +19,13 @@ type PracticeService struct {
 	itemRepo   *repository.ItemRepository
 	srsRepo    *repository.SRSRepository
 	answerRepo *repository.AnswerRepository
+	generator  *GeneratorService
 	scorer     *scorer.Scorer
 	srsAlgo    *srs.Algorithm
 
 	// In-memory session storage (use Redis in production)
-	sessions map[string]*model.PracticeSession
+	sessions       map[string]*model.PracticeSession
+	generatedItems map[string]*model.Item // Temporary storage for AI-generated items
 }
 
 // NewPracticeService creates a new PracticeService
@@ -31,14 +33,17 @@ func NewPracticeService(
 	itemRepo *repository.ItemRepository,
 	srsRepo *repository.SRSRepository,
 	answerRepo *repository.AnswerRepository,
+	generator *GeneratorService,
 ) *PracticeService {
 	return &PracticeService{
-		itemRepo:   itemRepo,
-		srsRepo:    srsRepo,
-		answerRepo: answerRepo,
-		scorer:     scorer.New(),
-		srsAlgo:    srs.New(),
-		sessions:   make(map[string]*model.PracticeSession),
+		itemRepo:       itemRepo,
+		srsRepo:        srsRepo,
+		answerRepo:     answerRepo,
+		generator:      generator,
+		scorer:         scorer.New(),
+		srsAlgo:        srs.New(),
+		sessions:       make(map[string]*model.PracticeSession),
+		generatedItems: make(map[string]*model.Item),
 	}
 }
 
@@ -107,13 +112,36 @@ func (s *PracticeService) GetNextQuestion(ctx context.Context, sessionID string)
 		return nil, nil // Session complete
 	}
 
-	itemID := session.ItemIDs[session.CurrentIndex]
-	item, err := s.itemRepo.GetByID(ctx, itemID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get item: %w", err)
+	var item *model.Item
+	var err error
+
+	// Check if we have a pre-selected item or need to generate
+	if session.CurrentIndex < len(session.ItemIDs) {
+		itemID := session.ItemIDs[session.CurrentIndex]
+		item, err = s.itemRepo.GetByID(ctx, itemID)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get item: %w", err)
+		}
 	}
+
+	// If no item found and generator is enabled, generate one
+	if item == nil && s.generator != nil && s.generator.IsEnabled() {
+		lengthBucket := model.LengthM
+		if len(session.Settings.LengthBuckets) > 0 {
+			lengthBucket = session.Settings.LengthBuckets[rand.Intn(len(session.Settings.LengthBuckets))]
+		}
+
+		item, err = s.generator.GenerateItem(ctx, session.Settings.Situations, lengthBucket)
+		if err != nil {
+			return nil, fmt.Errorf("failed to generate item: %w", err)
+		}
+
+		// Store generated item for answer checking
+		s.storeGeneratedItem(sessionID, item)
+	}
+
 	if item == nil {
-		return nil, fmt.Errorf("item not found: %s", itemID)
+		return nil, fmt.Errorf("no item available")
 	}
 
 	return &model.PracticeQuestion{
@@ -133,10 +161,14 @@ func (s *PracticeService) SubmitAnswer(ctx context.Context, sessionID, itemID, u
 		return nil, fmt.Errorf("session not found")
 	}
 
-	// Get the item
-	item, err := s.itemRepo.GetByID(ctx, itemID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get item: %w", err)
+	// Get the item (check generated items first, then DB)
+	item := s.getGeneratedItem(sessionID, itemID)
+	if item == nil {
+		var err error
+		item, err = s.itemRepo.GetByID(ctx, itemID)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get item: %w", err)
+		}
 	}
 	if item == nil {
 		return nil, fmt.Errorf("item not found: %s", itemID)
@@ -209,7 +241,26 @@ func (s *PracticeService) GetSession(sessionID string) (*model.PracticeSession, 
 
 // EndSession ends a practice session
 func (s *PracticeService) EndSession(sessionID string) {
+	// Clean up generated items for this session
+	prefix := sessionID + ":"
+	for key := range s.generatedItems {
+		if len(key) >= len(prefix) && key[:len(prefix)] == prefix {
+			delete(s.generatedItems, key)
+		}
+	}
 	delete(s.sessions, sessionID)
+}
+
+// storeGeneratedItem temporarily stores an AI-generated item
+func (s *PracticeService) storeGeneratedItem(sessionID string, item *model.Item) {
+	key := sessionID + ":" + item.ItemID
+	s.generatedItems[key] = item
+}
+
+// getGeneratedItem retrieves a temporarily stored AI-generated item
+func (s *PracticeService) getGeneratedItem(sessionID, itemID string) *model.Item {
+	key := sessionID + ":" + itemID
+	return s.generatedItems[key]
 }
 
 type itemWithPriority struct {

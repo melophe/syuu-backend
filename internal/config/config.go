@@ -26,6 +26,9 @@ type Config struct {
 	GoogleClientSecret string
 	JWTSecret          string
 
+	// AI Generation
+	AnthropicAPIKey string
+
 	// Frontend
 	FrontendURL string
 }
@@ -47,6 +50,8 @@ func Load() *Config {
 		GoogleClientID:     getEnv("GOOGLE_CLIENT_ID", ""),
 		GoogleClientSecret: getEnv("GOOGLE_CLIENT_SECRET", ""),
 		JWTSecret:          getEnv("JWT_SECRET", ""),
+
+		AnthropicAPIKey: getEnv("ANTHROPIC_API_KEY", ""),
 
 		FrontendURL: getEnv("FRONTEND_URL", "http://localhost:3000"),
 	}
