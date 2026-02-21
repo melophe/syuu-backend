@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/joho/godotenv"
 	"github.com/losts/syun-eng/backend/internal/config"
 	"github.com/losts/syun-eng/backend/internal/handler"
 	"github.com/losts/syun-eng/backend/internal/middleware"
@@ -18,6 +19,9 @@ import (
 )
 
 func main() {
+	// Load .env file (ignore error if not exists)
+	_ = godotenv.Load()
+
 	// Load configuration
 	cfg := config.Load()
 
