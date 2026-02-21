@@ -5,12 +5,22 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"github.com/losts/syun-eng/backend/internal/config"
 	"github.com/losts/syun-eng/backend/internal/service"
 )
 
 // AuthMiddleware creates authentication middleware
-func AuthMiddleware(authService *service.AuthService) gin.HandlerFunc {
+func AuthMiddleware(authService *service.AuthService, cfg *config.Config) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		// Skip auth in development mode
+		if cfg.Env == "development" {
+			c.Set("user_id", "dev-user-001")
+			c.Set("email", "dev@example.com")
+			c.Set("name", "Dev User")
+			c.Next()
+			return
+		}
+
 		authHeader := c.GetHeader("Authorization")
 		if authHeader == "" {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "authorization header required"})

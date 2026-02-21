@@ -70,7 +70,7 @@ func main() {
 
 	// Protected routes
 	api := r.Group("/api")
-	api.Use(middleware.AuthMiddleware(authService))
+	api.Use(middleware.AuthMiddleware(authService, cfg))
 	{
 		// User
 		api.GET("/me", authHandler.Me)

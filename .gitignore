@@ -44,3 +44,6 @@ secrets.json
 
 # Local seed data output
 seed_data.json
+
+# Claude Code
+CLAUDE.md
