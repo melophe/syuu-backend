@@ -78,9 +78,17 @@ func (h *PracticeHandler) StartSession(c *gin.Context) {
 
 // GetNextQuestion gets the next question in the session
 func (h *PracticeHandler) GetNextQuestion(c *gin.Context) {
+	userID := c.GetString("user_id")
 	sessionID := c.Param("session_id")
 	if sessionID == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "session_id required"})
+		return
+	}
+
+	// Verify session ownership
+	session, err := h.practiceService.GetSession(sessionID)
+	if err != nil || session.UserID != userID {
+		c.JSON(http.StatusForbidden, gin.H{"error": "unauthorized"})
 		return
 	}
 
@@ -119,9 +127,17 @@ type SubmitAnswerRequest struct {
 
 // SubmitAnswer submits an answer and returns the result
 func (h *PracticeHandler) SubmitAnswer(c *gin.Context) {
+	userID := c.GetString("user_id")
 	sessionID := c.Param("session_id")
 	if sessionID == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "session_id required"})
+		return
+	}
+
+	// Verify session ownership
+	session, err := h.practiceService.GetSession(sessionID)
+	if err != nil || session.UserID != userID {
+		c.JSON(http.StatusForbidden, gin.H{"error": "unauthorized"})
 		return
 	}
 
@@ -148,6 +164,7 @@ func (h *PracticeHandler) SubmitAnswer(c *gin.Context) {
 
 // GetSession gets session information
 func (h *PracticeHandler) GetSession(c *gin.Context) {
+	userID := c.GetString("user_id")
 	sessionID := c.Param("session_id")
 	if sessionID == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "session_id required"})
@@ -157,6 +174,12 @@ func (h *PracticeHandler) GetSession(c *gin.Context) {
 	session, err := h.practiceService.GetSession(sessionID)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+		return
+	}
+
+	// Verify session ownership
+	if session.UserID != userID {
+		c.JSON(http.StatusForbidden, gin.H{"error": "unauthorized"})
 		return
 	}
 
@@ -171,9 +194,17 @@ func (h *PracticeHandler) GetSession(c *gin.Context) {
 
 // EndSession ends a practice session
 func (h *PracticeHandler) EndSession(c *gin.Context) {
+	userID := c.GetString("user_id")
 	sessionID := c.Param("session_id")
 	if sessionID == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "session_id required"})
+		return
+	}
+
+	// Verify session ownership
+	session, err := h.practiceService.GetSession(sessionID)
+	if err != nil || session.UserID != userID {
+		c.JSON(http.StatusForbidden, gin.H{"error": "unauthorized"})
 		return
 	}
 
