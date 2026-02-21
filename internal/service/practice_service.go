@@ -131,7 +131,7 @@ func (s *PracticeService) GetNextQuestion(ctx context.Context, sessionID string)
 			lengthBucket = session.Settings.LengthBuckets[rand.Intn(len(session.Settings.LengthBuckets))]
 		}
 
-		item, err = s.generator.GenerateItem(ctx, session.Settings.Situations, lengthBucket)
+		item, err = s.generator.GenerateItem(ctx, session.Settings.Situations, lengthBucket, session.Settings.CustomTopic)
 		if err != nil {
 			return nil, fmt.Errorf("failed to generate item: %w", err)
 		}

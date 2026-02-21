@@ -6,6 +6,7 @@ type PracticeSettings struct {
 	LengthBuckets  []LengthBucket `json:"length_buckets"`  // Selected length buckets
 	QuestionCount  int            `json:"question_count"`  // Number of questions (0 = infinite)
 	ReviewPriority bool           `json:"review_priority"` // Prioritize due SRS items
+	CustomTopic    string         `json:"custom_topic"`    // Custom topic for AI generation
 }
 
 // PracticeSession represents an active practice session

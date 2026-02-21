@@ -47,7 +47,7 @@ type GeneratedItem struct {
 }
 
 // GenerateItem generates a new practice item using Claude API
-func (g *GeneratorService) GenerateItem(ctx context.Context, situations []string, lengthBucket model.LengthBucket) (*model.Item, error) {
+func (g *GeneratorService) GenerateItem(ctx context.Context, situations []string, lengthBucket model.LengthBucket, customTopic string) (*model.Item, error) {
 	if !g.enabled {
 		return nil, fmt.Errorf("generator service is not enabled (missing ANTHROPIC_API_KEY)")
 	}
@@ -58,11 +58,24 @@ func (g *GeneratorService) GenerateItem(ctx context.Context, situations []string
 		situationList = strings.Join(situations, ", ")
 	}
 
+	topicCondition := ""
+	if customTopic != "" {
+		// Limit topic length to prevent token waste
+		topic := customTopic
+		if len(topic) > 100 {
+			topic = topic[:100]
+		}
+		// Sanitize to prevent prompt injection
+		topic = strings.ReplaceAll(topic, "」", "")
+		topic = strings.ReplaceAll(topic, "「", "")
+		topicCondition = fmt.Sprintf("\n- お題/トピック: 「%s」（この内容に関連したフレーズを生成）", topic)
+	}
+
 	prompt := fmt.Sprintf(`ITエンジニアが仕事で使う日本語フレーズとその英訳を1つ生成してください。
 
 条件:
 - シチュエーション: %s
-- 文の長さ: %s
+- 文の長さ: %s%s
 
 以下のJSON形式のみで出力してください（説明不要）:
 {
@@ -70,7 +83,7 @@ func (g *GeneratorService) GenerateItem(ctx context.Context, situations []string
   "answers": ["模範となる英訳を1-2個"],
   "acceptable": ["許容される別の英訳を1-2個"],
   "difficulty": 1から5の難易度
-}`, situationList, lengthDesc)
+}`, situationList, lengthDesc, topicCondition)
 
 	message, err := g.client.Messages.New(ctx, anthropic.MessageNewParams{
 		Model:     "claude-3-5-sonnet-20241022",

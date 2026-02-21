@@ -26,6 +26,7 @@ type StartSessionRequest struct {
 	LengthBuckets  []model.LengthBucket `json:"length_buckets"`
 	QuestionCount  int                  `json:"question_count"`
 	ReviewPriority bool                 `json:"review_priority"`
+	CustomTopic    string               `json:"custom_topic"`
 }
 
 // StartSessionResponse represents the response after starting a session
@@ -54,6 +55,7 @@ func (h *PracticeHandler) StartSession(c *gin.Context) {
 		LengthBuckets:  req.LengthBuckets,
 		QuestionCount:  req.QuestionCount,
 		ReviewPriority: req.ReviewPriority,
+		CustomTopic:    req.CustomTopic,
 	}
 
 	session, err := h.practiceService.StartSession(c.Request.Context(), userID, settings)
