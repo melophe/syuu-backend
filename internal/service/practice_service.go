@@ -239,6 +239,24 @@ func (s *PracticeService) GetSession(sessionID string) (*model.PracticeSession, 
 	return session, nil
 }
 
+// GetHint returns a hint for a given item
+func (s *PracticeService) GetHint(ctx context.Context, sessionID, itemID string, level int) (string, error) {
+	// Get the item (check generated items first, then DB)
+	item := s.getGeneratedItem(sessionID, itemID)
+	if item == nil {
+		var err error
+		item, err = s.itemRepo.GetByID(ctx, itemID)
+		if err != nil {
+			return "", fmt.Errorf("failed to get item: %w", err)
+		}
+	}
+	if item == nil {
+		return "", fmt.Errorf("item not found: %s", itemID)
+	}
+
+	return s.generator.GenerateHint(item, level), nil
+}
+
 // EndSession ends a practice session
 func (s *PracticeService) EndSession(sessionID string) {
 	// Clean up generated items for this session

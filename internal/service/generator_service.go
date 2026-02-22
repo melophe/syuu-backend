@@ -143,6 +143,40 @@ func (g *GeneratorService) GenerateItem(ctx context.Context, situations []string
 	return item, nil
 }
 
+// GenerateHint generates a hint for a given item
+func (g *GeneratorService) GenerateHint(item *model.Item, level int) string {
+	if len(item.Answers) == 0 {
+		return "ヒントがありません"
+	}
+
+	answer := item.Answers[0]
+	words := strings.Fields(answer)
+
+	switch level {
+	case 1:
+		// Level 1: Show word count
+		return fmt.Sprintf("%d語の文です", len(words))
+	case 2:
+		// Level 2: Show first word
+		if len(words) > 0 {
+			return fmt.Sprintf("最初の単語: %s ...", words[0])
+		}
+		return "ヒントがありません"
+	case 3:
+		// Level 3: Show first few words
+		showCount := len(words) / 3
+		if showCount < 2 {
+			showCount = 2
+		}
+		if showCount > len(words) {
+			showCount = len(words)
+		}
+		return strings.Join(words[:showCount], " ") + " ..."
+	default:
+		return fmt.Sprintf("%d語の文です", len(words))
+	}
+}
+
 func getLengthDescription(bucket model.LengthBucket) string {
 	switch bucket {
 	case model.LengthS:

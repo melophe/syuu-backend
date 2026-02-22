@@ -87,6 +87,7 @@ func main() {
 			practice.GET("/:session_id", practiceHandler.GetSession)
 			practice.GET("/:session_id/next", practiceHandler.GetNextQuestion)
 			practice.POST("/:session_id/answer", practiceHandler.SubmitAnswer)
+			practice.POST("/:session_id/hint", practiceHandler.GetHint)
 			practice.DELETE("/:session_id", practiceHandler.EndSession)
 		}
 

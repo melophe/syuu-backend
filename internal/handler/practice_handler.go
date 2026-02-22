@@ -194,6 +194,49 @@ func (h *PracticeHandler) GetSession(c *gin.Context) {
 	})
 }
 
+// GetHintRequest represents the request to get a hint
+type GetHintRequest struct {
+	ItemID string `json:"item_id" binding:"required"`
+	Level  int    `json:"level"`
+}
+
+// GetHint returns a hint for the current question
+func (h *PracticeHandler) GetHint(c *gin.Context) {
+	userID := c.GetString("user_id")
+	sessionID := c.Param("session_id")
+	if sessionID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "session_id required"})
+		return
+	}
+
+	// Verify session ownership
+	session, err := h.practiceService.GetSession(sessionID)
+	if err != nil || session.UserID != userID {
+		c.JSON(http.StatusForbidden, gin.H{"error": "unauthorized"})
+		return
+	}
+
+	var req GetHintRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	// Default to level 1 if not specified
+	level := req.Level
+	if level < 1 || level > 3 {
+		level = 1
+	}
+
+	hint, err := h.practiceService.GetHint(c.Request.Context(), sessionID, req.ItemID, level)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"hint": hint, "level": level})
+}
+
 // EndSession ends a practice session
 func (h *PracticeHandler) EndSession(c *gin.Context) {
 	userID := c.GetString("user_id")
