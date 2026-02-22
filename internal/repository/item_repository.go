@@ -43,11 +43,11 @@ type itemRecord struct {
 	CreatedAt    string   `dynamodbav:"created_at"`
 }
 
-// GetByID retrieves an item by ID
-func (r *ItemRepository) GetByID(ctx context.Context, itemID string) (*model.Item, error) {
+// GetByID retrieves an item by ID for a specific user
+func (r *ItemRepository) GetByID(ctx context.Context, userID, itemID string) (*model.Item, error) {
 	key := map[string]types.AttributeValue{
-		"PK": &types.AttributeValueMemberS{Value: fmt.Sprintf("ITEM#%s", itemID)},
-		"SK": &types.AttributeValueMemberS{Value: "METADATA"},
+		"PK": &types.AttributeValueMemberS{Value: fmt.Sprintf("USER#%s#ITEMS", userID)},
+		"SK": &types.AttributeValueMemberS{Value: fmt.Sprintf("ITEM#%s", itemID)},
 	}
 
 	result, err := r.client.GetItem(ctx, &dynamodb.GetItemInput{

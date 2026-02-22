@@ -153,7 +153,7 @@ func (s *PracticeService) GetNextQuestion(ctx context.Context, sessionID string)
 
 		item = s.getGeneratedItem(sessionID, itemID)
 		if item == nil {
-			item, err = s.itemRepo.GetByID(ctx, itemID)
+			item, err = s.itemRepo.GetByID(ctx, session.UserID, itemID)
 			if err != nil {
 				return nil, fmt.Errorf("failed to get item: %w", err)
 			}
@@ -209,7 +209,7 @@ func (s *PracticeService) SubmitAnswer(ctx context.Context, sessionID, itemID, u
 	isGenerated := item != nil
 	if item == nil {
 		var err error
-		item, err = s.itemRepo.GetByID(ctx, itemID)
+		item, err = s.itemRepo.GetByID(ctx, session.UserID, itemID)
 		if err != nil {
 			return nil, fmt.Errorf("failed to get item: %w", err)
 		}
@@ -294,11 +294,16 @@ func (s *PracticeService) GetSession(sessionID string) (*model.PracticeSession, 
 
 // GetHint returns a hint for a given item
 func (s *PracticeService) GetHint(ctx context.Context, sessionID, itemID string, level int) (string, error) {
+	session, ok := s.sessions[sessionID]
+	if !ok {
+		return "", fmt.Errorf("session not found")
+	}
+
 	// Get the item (check generated items first, then DB)
 	item := s.getGeneratedItem(sessionID, itemID)
 	if item == nil {
 		var err error
-		item, err = s.itemRepo.GetByID(ctx, itemID)
+		item, err = s.itemRepo.GetByID(ctx, session.UserID, itemID)
 		if err != nil {
 			return "", fmt.Errorf("failed to get item: %w", err)
 		}
