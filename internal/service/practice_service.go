@@ -54,45 +54,53 @@ func (s *PracticeService) StartSession(ctx context.Context, userID string, setti
 		totalQuestions = 10
 	}
 
-	var itemIDs []string
+	var reviewItemIDs []string
+	var reviewCount int
 
-	// Review mode: get existing items from DB
-	if settings.ReviewPriority {
-		query := &repository.ItemQuery{
-			UserID:        userID,
-			Situations:    settings.Situations,
-			LengthBuckets: settings.LengthBuckets,
-		}
-
-		items, err := s.itemRepo.ListByUser(ctx, query)
-		if err != nil {
-			return nil, fmt.Errorf("failed to get items: %w", err)
-		}
-
-		if len(items) > 0 {
-			// Get SRS states for prioritization
-			srsStates, err := s.srsRepo.GetAllForUser(ctx, userID)
-			if err != nil {
-				return nil, fmt.Errorf("failed to get SRS states: %w", err)
-			}
-
-			srsMap := make(map[string]*model.SRSState)
-			for _, state := range srsStates {
-				srsMap[state.ItemID] = state
-			}
-
-			// Sort items by priority
-			itemIDs = s.prioritizeItems(items, srsMap, true)
-
-			if len(itemIDs) > totalQuestions {
-				itemIDs = itemIDs[:totalQuestions]
-			}
-			totalQuestions = len(itemIDs)
-		}
+	// Get due review items from DB
+	query := &repository.ItemQuery{
+		UserID:        userID,
+		Situations:    settings.Situations,
+		LengthBuckets: settings.LengthBuckets,
 	}
 
-	// For new questions mode or if no review items: generate with AI
-	// itemIDs will be empty, questions generated on demand in GetNextQuestion
+	items, err := s.itemRepo.ListByUser(ctx, query)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get items: %w", err)
+	}
+
+	if len(items) > 0 {
+		// Get SRS states to find due items
+		srsStates, err := s.srsRepo.GetAllForUser(ctx, userID)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get SRS states: %w", err)
+		}
+
+		srsMap := make(map[string]*model.SRSState)
+		for _, state := range srsStates {
+			srsMap[state.ItemID] = state
+		}
+
+		// Sort items by priority (due items first)
+		reviewItemIDs = s.prioritizeItems(items, srsMap, true)
+
+		if settings.ReviewPriority {
+			// Review priority mode: 100% review
+			reviewCount = totalQuestions
+		} else {
+			// Hybrid mode: 30% review, 70% new
+			reviewCount = totalQuestions * 30 / 100
+		}
+
+		// Limit review items
+		if len(reviewItemIDs) > reviewCount {
+			reviewItemIDs = reviewItemIDs[:reviewCount]
+		}
+		reviewCount = len(reviewItemIDs)
+	}
+
+	// Calculate how many new items to generate
+	newCount := totalQuestions - reviewCount
 
 	session := &model.PracticeSession{
 		SessionID:       uuid.New().String(),
@@ -101,7 +109,8 @@ func (s *PracticeService) StartSession(ctx context.Context, userID string, setti
 		CurrentIndex:    0,
 		TotalQuestions:  totalQuestions,
 		CorrectCount:    0,
-		ItemIDs:         itemIDs,
+		ItemIDs:         reviewItemIDs,        // Review items (pre-loaded)
+		NewItemCount:    newCount,             // New items to generate
 		AnsweredItemIDs: []string{},
 	}
 
@@ -124,10 +133,24 @@ func (s *PracticeService) GetNextQuestion(ctx context.Context, sessionID string)
 	var item *model.Item
 	var err error
 
-	// Check if we have a pre-selected item (review mode)
-	if session.CurrentIndex < len(session.ItemIDs) {
-		itemID := session.ItemIDs[session.CurrentIndex]
-		// Check generated items first, then DB
+	// Determine if this question should be review or new
+	// Interleave: every 3rd question is review (if available)
+	reviewItemsRemaining := len(session.ItemIDs)
+	newItemsRemaining := session.NewItemCount
+	shouldUseReview := false
+
+	if reviewItemsRemaining > 0 && newItemsRemaining > 0 {
+		// Interleave pattern: R, N, N, R, N, N, ...
+		shouldUseReview = (session.CurrentIndex % 3) == 0
+	} else if reviewItemsRemaining > 0 {
+		shouldUseReview = true
+	}
+
+	if shouldUseReview && len(session.ItemIDs) > 0 {
+		// Get review item from DB
+		itemID := session.ItemIDs[0]
+		session.ItemIDs = session.ItemIDs[1:] // Remove from list
+
 		item = s.getGeneratedItem(sessionID, itemID)
 		if item == nil {
 			item, err = s.itemRepo.GetByID(ctx, itemID)
@@ -138,7 +161,7 @@ func (s *PracticeService) GetNextQuestion(ctx context.Context, sessionID string)
 	}
 
 	// Generate new item with AI if needed
-	if item == nil && s.generator != nil && s.generator.IsEnabled() {
+	if item == nil && s.generator != nil && s.generator.IsEnabled() && session.NewItemCount > 0 {
 		lengthBucket := model.LengthM
 		if len(session.Settings.LengthBuckets) > 0 {
 			lengthBucket = session.Settings.LengthBuckets[rand.Intn(len(session.Settings.LengthBuckets))]
@@ -155,6 +178,9 @@ func (s *PracticeService) GetNextQuestion(ctx context.Context, sessionID string)
 
 		// Store generated item for answer checking
 		s.storeGeneratedItem(sessionID, item)
+
+		// Decrement new item count
+		session.NewItemCount--
 	}
 
 	if item == nil {

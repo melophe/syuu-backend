@@ -17,7 +17,8 @@ type PracticeSession struct {
 	CurrentIndex     int              `json:"current_index"`
 	TotalQuestions   int              `json:"total_questions"`
 	CorrectCount     int              `json:"correct_count"`
-	ItemIDs          []string         `json:"item_ids"`           // Ordered list of item IDs for this session
+	ItemIDs          []string         `json:"item_ids"`           // Review item IDs (pre-loaded)
+	NewItemCount     int              `json:"new_item_count"`     // Number of new items to generate
 	AnsweredItemIDs  []string         `json:"answered_item_ids"`  // Items already answered
 }
 
