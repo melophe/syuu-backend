@@ -15,6 +15,7 @@ const (
 // Item represents a practice question
 type Item struct {
 	ItemID       string       `json:"item_id" dynamodbav:"item_id"`
+	UserID       string       `json:"user_id" dynamodbav:"user_id"`           // Owner (empty for seed data)
 	Japanese     string       `json:"japanese" dynamodbav:"japanese"`
 	Answers      []string     `json:"answers" dynamodbav:"answers"`           // Model answers
 	Acceptable   []string     `json:"acceptable" dynamodbav:"acceptable"`     // Acceptable alternatives
@@ -23,6 +24,7 @@ type Item struct {
 	WordCount    int          `json:"word_count" dynamodbav:"word_count"`
 	LengthBucket LengthBucket `json:"length_bucket" dynamodbav:"length_bucket"`
 	Difficulty   int          `json:"difficulty" dynamodbav:"difficulty"` // 1-5
+	CustomTopic  string       `json:"custom_topic" dynamodbav:"custom_topic"` // Topic used for generation
 	CreatedAt    time.Time    `json:"created_at" dynamodbav:"created_at"`
 }
 

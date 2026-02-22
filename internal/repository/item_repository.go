@@ -30,6 +30,7 @@ type itemRecord struct {
 	PK           string   `dynamodbav:"PK"`
 	SK           string   `dynamodbav:"SK"`
 	ItemID       string   `dynamodbav:"item_id"`
+	UserID       string   `dynamodbav:"user_id"`
 	Japanese     string   `dynamodbav:"japanese"`
 	Answers      []string `dynamodbav:"answers"`
 	Acceptable   []string `dynamodbav:"acceptable"`
@@ -38,6 +39,7 @@ type itemRecord struct {
 	WordCount    int      `dynamodbav:"word_count"`
 	LengthBucket string   `dynamodbav:"length_bucket"`
 	Difficulty   int      `dynamodbav:"difficulty"`
+	CustomTopic  string   `dynamodbav:"custom_topic"`
 	CreatedAt    string   `dynamodbav:"created_at"`
 }
 
@@ -70,30 +72,34 @@ func (r *ItemRepository) GetByID(ctx context.Context, itemID string) (*model.Ite
 
 // Query retrieves items matching the given criteria
 type ItemQuery struct {
+	UserID        string // Required: filter by user
 	Situations    []string
 	LengthBuckets []model.LengthBucket
 	Limit         int
 }
 
-// List retrieves items with optional filtering
-func (r *ItemRepository) List(ctx context.Context, query *ItemQuery) ([]*model.Item, error) {
-	// For DynamoDB, we'll use Scan with filters
-	// In production, consider GSIs for better performance
-	input := &dynamodb.ScanInput{
-		TableName:        aws.String(r.tableName),
-		FilterExpression: aws.String("SK = :sk"),
+// ListByUser retrieves items for a specific user
+func (r *ItemRepository) ListByUser(ctx context.Context, query *ItemQuery) ([]*model.Item, error) {
+	if query == nil || query.UserID == "" {
+		return nil, fmt.Errorf("user_id is required")
+	}
+
+	// Query by user's items using PK prefix
+	input := &dynamodb.QueryInput{
+		TableName:              aws.String(r.tableName),
+		KeyConditionExpression: aws.String("PK = :pk"),
 		ExpressionAttributeValues: map[string]types.AttributeValue{
-			":sk": &types.AttributeValueMemberS{Value: "METADATA"},
+			":pk": &types.AttributeValueMemberS{Value: fmt.Sprintf("USER#%s#ITEMS", query.UserID)},
 		},
 	}
 
-	if query != nil && query.Limit > 0 {
+	if query.Limit > 0 {
 		input.Limit = aws.Int32(int32(query.Limit))
 	}
 
-	result, err := r.client.Scan(ctx, input)
+	result, err := r.client.Query(ctx, input)
 	if err != nil {
-		return nil, fmt.Errorf("failed to scan items: %w", err)
+		return nil, fmt.Errorf("failed to query items: %w", err)
 	}
 
 	items := make([]*model.Item, 0, len(result.Items))
@@ -105,7 +111,7 @@ func (r *ItemRepository) List(ctx context.Context, query *ItemQuery) ([]*model.I
 
 		modelItem := r.recordToModel(&record)
 
-		// Apply filters in memory (for MVP; consider GSIs for production)
+		// Apply filters in memory
 		if r.matchesQuery(modelItem, query) {
 			items = append(items, modelItem)
 		}
@@ -174,6 +180,7 @@ func (r *ItemRepository) BatchCreate(ctx context.Context, items []*model.Item) e
 func (r *ItemRepository) recordToModel(record *itemRecord) *model.Item {
 	return &model.Item{
 		ItemID:       record.ItemID,
+		UserID:       record.UserID,
 		Japanese:     record.Japanese,
 		Answers:      record.Answers,
 		Acceptable:   record.Acceptable,
@@ -182,14 +189,20 @@ func (r *ItemRepository) recordToModel(record *itemRecord) *model.Item {
 		WordCount:    record.WordCount,
 		LengthBucket: model.LengthBucket(record.LengthBucket),
 		Difficulty:   record.Difficulty,
+		CustomTopic:  record.CustomTopic,
 	}
 }
 
 func (r *ItemRepository) modelToRecord(item *model.Item) *itemRecord {
+	// Use user-specific PK for user-generated items
+	pk := fmt.Sprintf("USER#%s#ITEMS", item.UserID)
+	sk := fmt.Sprintf("ITEM#%s", item.ItemID)
+
 	return &itemRecord{
-		PK:           fmt.Sprintf("ITEM#%s", item.ItemID),
-		SK:           "METADATA",
+		PK:           pk,
+		SK:           sk,
 		ItemID:       item.ItemID,
+		UserID:       item.UserID,
 		Japanese:     item.Japanese,
 		Answers:      item.Answers,
 		Acceptable:   item.Acceptable,
@@ -198,6 +211,7 @@ func (r *ItemRepository) modelToRecord(item *model.Item) *itemRecord {
 		WordCount:    item.WordCount,
 		LengthBucket: string(item.LengthBucket),
 		Difficulty:   item.Difficulty,
+		CustomTopic:  item.CustomTopic,
 		CreatedAt:    item.CreatedAt.Format("2006-01-02T15:04:05Z"),
 	}
 }

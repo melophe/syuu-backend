@@ -49,41 +49,50 @@ func NewPracticeService(
 
 // StartSession starts a new practice session
 func (s *PracticeService) StartSession(ctx context.Context, userID string, settings model.PracticeSettings) (*model.PracticeSession, error) {
-	// Get items matching the criteria
-	query := &repository.ItemQuery{
-		Situations:    settings.Situations,
-		LengthBuckets: settings.LengthBuckets,
+	totalQuestions := settings.QuestionCount
+	if totalQuestions <= 0 {
+		totalQuestions = 10
 	}
 
-	items, err := s.itemRepo.List(ctx, query)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get items: %w", err)
+	var itemIDs []string
+
+	// Review mode: get existing items from DB
+	if settings.ReviewPriority {
+		query := &repository.ItemQuery{
+			UserID:        userID,
+			Situations:    settings.Situations,
+			LengthBuckets: settings.LengthBuckets,
+		}
+
+		items, err := s.itemRepo.ListByUser(ctx, query)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get items: %w", err)
+		}
+
+		if len(items) > 0 {
+			// Get SRS states for prioritization
+			srsStates, err := s.srsRepo.GetAllForUser(ctx, userID)
+			if err != nil {
+				return nil, fmt.Errorf("failed to get SRS states: %w", err)
+			}
+
+			srsMap := make(map[string]*model.SRSState)
+			for _, state := range srsStates {
+				srsMap[state.ItemID] = state
+			}
+
+			// Sort items by priority
+			itemIDs = s.prioritizeItems(items, srsMap, true)
+
+			if len(itemIDs) > totalQuestions {
+				itemIDs = itemIDs[:totalQuestions]
+			}
+			totalQuestions = len(itemIDs)
+		}
 	}
 
-	if len(items) == 0 {
-		return nil, fmt.Errorf("no items found matching criteria")
-	}
-
-	// Get SRS states for prioritization
-	srsStates, err := s.srsRepo.GetAllForUser(ctx, userID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get SRS states: %w", err)
-	}
-
-	srsMap := make(map[string]*model.SRSState)
-	for _, state := range srsStates {
-		srsMap[state.ItemID] = state
-	}
-
-	// Sort items by priority
-	itemIDs := s.prioritizeItems(items, srsMap, settings.ReviewPriority)
-
-	// Limit question count
-	totalQuestions := len(itemIDs)
-	if settings.QuestionCount > 0 && settings.QuestionCount < totalQuestions {
-		totalQuestions = settings.QuestionCount
-		itemIDs = itemIDs[:totalQuestions]
-	}
+	// For new questions mode or if no review items: generate with AI
+	// itemIDs will be empty, questions generated on demand in GetNextQuestion
 
 	session := &model.PracticeSession{
 		SessionID:       uuid.New().String(),
@@ -115,16 +124,20 @@ func (s *PracticeService) GetNextQuestion(ctx context.Context, sessionID string)
 	var item *model.Item
 	var err error
 
-	// Check if we have a pre-selected item or need to generate
+	// Check if we have a pre-selected item (review mode)
 	if session.CurrentIndex < len(session.ItemIDs) {
 		itemID := session.ItemIDs[session.CurrentIndex]
-		item, err = s.itemRepo.GetByID(ctx, itemID)
-		if err != nil {
-			return nil, fmt.Errorf("failed to get item: %w", err)
+		// Check generated items first, then DB
+		item = s.getGeneratedItem(sessionID, itemID)
+		if item == nil {
+			item, err = s.itemRepo.GetByID(ctx, itemID)
+			if err != nil {
+				return nil, fmt.Errorf("failed to get item: %w", err)
+			}
 		}
 	}
 
-	// If no item found and generator is enabled, generate one
+	// Generate new item with AI if needed
 	if item == nil && s.generator != nil && s.generator.IsEnabled() {
 		lengthBucket := model.LengthM
 		if len(session.Settings.LengthBuckets) > 0 {
@@ -135,6 +148,10 @@ func (s *PracticeService) GetNextQuestion(ctx context.Context, sessionID string)
 		if err != nil {
 			return nil, fmt.Errorf("failed to generate item: %w", err)
 		}
+
+		// Set user ID and custom topic for later DB save
+		item.UserID = session.UserID
+		item.CustomTopic = session.Settings.CustomTopic
 
 		// Store generated item for answer checking
 		s.storeGeneratedItem(sessionID, item)
@@ -163,6 +180,7 @@ func (s *PracticeService) SubmitAnswer(ctx context.Context, sessionID, itemID, u
 
 	// Get the item (check generated items first, then DB)
 	item := s.getGeneratedItem(sessionID, itemID)
+	isGenerated := item != nil
 	if item == nil {
 		var err error
 		item, err = s.itemRepo.GetByID(ctx, itemID)
@@ -182,6 +200,15 @@ func (s *PracticeService) SubmitAnswer(ctx context.Context, sessionID, itemID, u
 	session.AnsweredItemIDs = append(session.AnsweredItemIDs, itemID)
 	if scoreResult.IsCorrect {
 		session.CorrectCount++
+	}
+
+	// Save AI-generated item to DB for future review
+	if isGenerated {
+		item.CreatedAt = time.Now()
+		if err := s.itemRepo.Create(ctx, item); err != nil {
+			// Log error but don't fail the answer submission
+			fmt.Printf("failed to save generated item: %v\n", err)
+		}
 	}
 
 	// Update SRS state
