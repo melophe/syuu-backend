@@ -3,8 +3,10 @@ package service
 import (
 	"context"
 	"fmt"
+	"log"
 	"math/rand"
 	"sort"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -24,6 +26,7 @@ type PracticeService struct {
 	srsAlgo    *srs.Algorithm
 
 	// In-memory session storage (use Redis in production)
+	mu             sync.RWMutex
 	sessions       map[string]*model.PracticeSession
 	generatedItems map[string]*model.Item // Temporary storage for AI-generated items
 }
@@ -35,6 +38,7 @@ func NewPracticeService(
 	answerRepo *repository.AnswerRepository,
 	generator *GeneratorService,
 ) *PracticeService {
+	rand.Seed(time.Now().UnixNano())
 	return &PracticeService{
 		itemRepo:       itemRepo,
 		srsRepo:        srsRepo,
@@ -114,92 +118,110 @@ func (s *PracticeService) StartSession(ctx context.Context, userID string, setti
 		AnsweredItemIDs: []string{},
 	}
 
+	s.mu.Lock()
 	s.sessions[session.SessionID] = session
+	s.mu.Unlock()
 
 	return session, nil
 }
 
 // GetNextQuestion gets the next question in the session
 func (s *PracticeService) GetNextQuestion(ctx context.Context, sessionID string) (*model.PracticeQuestion, error) {
+	s.mu.Lock()
 	session, ok := s.sessions[sessionID]
 	if !ok {
+		s.mu.Unlock()
 		return nil, fmt.Errorf("session not found")
 	}
 
 	if session.CurrentIndex >= session.TotalQuestions {
+		s.mu.Unlock()
 		return nil, nil // Session complete
 	}
 
 	var item *model.Item
 	var err error
+	var itemID string
 
 	// Determine if this question should be review or new
-	// Interleave: every 3rd question is review (if available)
 	reviewItemsRemaining := len(session.ItemIDs)
 	newItemsRemaining := session.NewItemCount
 	shouldUseReview := false
 
 	if reviewItemsRemaining > 0 && newItemsRemaining > 0 {
-		// Interleave pattern: R, N, N, R, N, N, ...
 		shouldUseReview = (session.CurrentIndex % 3) == 0
 	} else if reviewItemsRemaining > 0 {
 		shouldUseReview = true
 	}
 
 	if shouldUseReview && len(session.ItemIDs) > 0 {
-		// Get review item from DB
-		itemID := session.ItemIDs[0]
-		session.ItemIDs = session.ItemIDs[1:] // Remove from list
+		itemID = session.ItemIDs[0]
+		session.ItemIDs = session.ItemIDs[1:]
+	}
 
+	userID := session.UserID
+	settings := session.Settings
+	needsGeneration := !shouldUseReview || itemID == ""
+	if needsGeneration && session.NewItemCount > 0 {
+		session.NewItemCount--
+	}
+	s.mu.Unlock()
+
+	// Fetch or generate item outside the lock
+	if itemID != "" {
 		item = s.getGeneratedItem(sessionID, itemID)
 		if item == nil {
-			item, err = s.itemRepo.GetByID(ctx, session.UserID, itemID)
+			item, err = s.itemRepo.GetByID(ctx, userID, itemID)
 			if err != nil {
 				return nil, fmt.Errorf("failed to get item: %w", err)
 			}
 		}
 	}
 
-	// Generate new item with AI if needed
-	if item == nil && s.generator != nil && s.generator.IsEnabled() && session.NewItemCount > 0 {
+	if item == nil && s.generator != nil && s.generator.IsEnabled() && needsGeneration {
 		lengthBucket := model.LengthM
-		if len(session.Settings.LengthBuckets) > 0 {
-			lengthBucket = session.Settings.LengthBuckets[rand.Intn(len(session.Settings.LengthBuckets))]
+		if len(settings.LengthBuckets) > 0 {
+			lengthBucket = settings.LengthBuckets[rand.Intn(len(settings.LengthBuckets))]
 		}
 
-		item, err = s.generator.GenerateItem(ctx, session.Settings.Situations, lengthBucket, session.Settings.CustomTopic)
+		item, err = s.generator.GenerateItem(ctx, settings.Situations, lengthBucket, settings.CustomTopic)
 		if err != nil {
 			return nil, fmt.Errorf("failed to generate item: %w", err)
 		}
 
-		// Set user ID and custom topic for later DB save
-		item.UserID = session.UserID
-		item.CustomTopic = session.Settings.CustomTopic
-
-		// Store generated item for answer checking
+		item.UserID = userID
+		item.CustomTopic = settings.CustomTopic
 		s.storeGeneratedItem(sessionID, item)
-
-		// Decrement new item count
-		session.NewItemCount--
 	}
 
 	if item == nil {
 		return nil, fmt.Errorf("no item available")
 	}
 
+	s.mu.RLock()
+	currentIndex := session.CurrentIndex
+	totalQuestions := session.TotalQuestions
+	s.mu.RUnlock()
+
 	return &model.PracticeQuestion{
 		ItemID:         item.ItemID,
 		Japanese:       item.Japanese,
 		LengthBucket:   item.LengthBucket,
 		Difficulty:     item.Difficulty,
-		QuestionNumber: session.CurrentIndex + 1,
-		TotalQuestions: session.TotalQuestions,
+		QuestionNumber: currentIndex + 1,
+		TotalQuestions: totalQuestions,
 	}, nil
 }
 
 // SubmitAnswer submits an answer and returns the result
 func (s *PracticeService) SubmitAnswer(ctx context.Context, sessionID, itemID, userInput string, responseTimeMs int64) (*model.AnswerResult, error) {
+	s.mu.RLock()
 	session, ok := s.sessions[sessionID]
+	userID := ""
+	if ok {
+		userID = session.UserID
+	}
+	s.mu.RUnlock()
 	if !ok {
 		return nil, fmt.Errorf("session not found")
 	}
@@ -209,7 +231,7 @@ func (s *PracticeService) SubmitAnswer(ctx context.Context, sessionID, itemID, u
 	isGenerated := item != nil
 	if item == nil {
 		var err error
-		item, err = s.itemRepo.GetByID(ctx, session.UserID, itemID)
+		item, err = s.itemRepo.GetByID(ctx, userID, itemID)
 		if err != nil {
 			return nil, fmt.Errorf("failed to get item: %w", err)
 		}
@@ -221,19 +243,20 @@ func (s *PracticeService) SubmitAnswer(ctx context.Context, sessionID, itemID, u
 	// Score the answer
 	scoreResult := s.scorer.Score(userInput, item.Answers, item.Acceptable)
 
-	// Update session
+	// Update session with lock
+	s.mu.Lock()
 	session.CurrentIndex++
 	session.AnsweredItemIDs = append(session.AnsweredItemIDs, itemID)
 	if scoreResult.IsCorrect {
 		session.CorrectCount++
 	}
+	s.mu.Unlock()
 
 	// Save AI-generated item to DB for future review
 	if isGenerated {
 		item.CreatedAt = time.Now()
 		if err := s.itemRepo.Create(ctx, item); err != nil {
-			// Log error but don't fail the answer submission
-			fmt.Printf("failed to save generated item: %v\n", err)
+			log.Printf("failed to save generated item: %v", err)
 		}
 	}
 
@@ -274,18 +297,39 @@ func (s *PracticeService) SubmitAnswer(ctx context.Context, sessionID, itemID, u
 		return nil, fmt.Errorf("failed to save answer: %w", err)
 	}
 
-	return &model.AnswerResult{
+	result := &model.AnswerResult{
 		IsCorrect:    scoreResult.IsCorrect,
 		UserInput:    userInput,
 		ModelAnswers: item.Answers,
 		Acceptable:   item.Acceptable,
 		MatchedWith:  scoreResult.MatchedWith,
-	}, nil
+	}
+
+	// Generate coach feedback if AI is enabled
+	if s.generator != nil && s.generator.IsEnabled() {
+		feedback, err := s.generator.GenerateCoachFeedback(
+			ctx,
+			item.Japanese,
+			userInput,
+			item.Answers,
+			item.Acceptable,
+			scoreResult.IsCorrect,
+		)
+		if err != nil {
+			log.Printf("failed to generate coach feedback: %v", err)
+		} else {
+			result.Feedback = feedback
+		}
+	}
+
+	return result, nil
 }
 
 // GetSession retrieves a session by ID
 func (s *PracticeService) GetSession(sessionID string) (*model.PracticeSession, error) {
+	s.mu.RLock()
 	session, ok := s.sessions[sessionID]
+	s.mu.RUnlock()
 	if !ok {
 		return nil, fmt.Errorf("session not found")
 	}
@@ -294,7 +338,9 @@ func (s *PracticeService) GetSession(sessionID string) (*model.PracticeSession, 
 
 // GetHint returns a hint for a given item
 func (s *PracticeService) GetHint(ctx context.Context, sessionID, itemID string, level int) (string, error) {
+	s.mu.RLock()
 	session, ok := s.sessions[sessionID]
+	s.mu.RUnlock()
 	if !ok {
 		return "", fmt.Errorf("session not found")
 	}
@@ -317,6 +363,8 @@ func (s *PracticeService) GetHint(ctx context.Context, sessionID, itemID string,
 
 // EndSession ends a practice session
 func (s *PracticeService) EndSession(sessionID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	// Clean up generated items for this session
 	prefix := sessionID + ":"
 	for key := range s.generatedItems {
@@ -329,12 +377,16 @@ func (s *PracticeService) EndSession(sessionID string) {
 
 // storeGeneratedItem temporarily stores an AI-generated item
 func (s *PracticeService) storeGeneratedItem(sessionID string, item *model.Item) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	key := sessionID + ":" + item.ItemID
 	s.generatedItems[key] = item
 }
 
 // getGeneratedItem retrieves a temporarily stored AI-generated item
 func (s *PracticeService) getGeneratedItem(sessionID, itemID string) *model.Item {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	key := sessionID + ":" + itemID
 	return s.generatedItems[key]
 }

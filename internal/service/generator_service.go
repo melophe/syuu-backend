@@ -60,15 +60,10 @@ func (g *GeneratorService) GenerateItem(ctx context.Context, situations []string
 
 	topicCondition := ""
 	if customTopic != "" {
-		// Limit topic length to prevent token waste
-		topic := customTopic
-		if len(topic) > 100 {
-			topic = topic[:100]
+		topic := sanitizeTopic(customTopic)
+		if topic != "" {
+			topicCondition = fmt.Sprintf("\n- お題/トピック: 「%s」（この内容に関連したフレーズを生成）", topic)
 		}
-		// Sanitize to prevent prompt injection
-		topic = strings.ReplaceAll(topic, "」", "")
-		topic = strings.ReplaceAll(topic, "「", "")
-		topicCondition = fmt.Sprintf("\n- お題/トピック: 「%s」（この内容に関連したフレーズを生成）", topic)
 	}
 
 	prompt := fmt.Sprintf(`ITエンジニアが仕事で使う日本語フレーズとその英訳を1つ生成してください。
@@ -190,4 +185,127 @@ func getLengthDescription(bucket model.LengthBucket) string {
 	default:
 		return "M (中程度: 7-12語)"
 	}
+}
+
+// sanitizeTopic sanitizes user input to prevent prompt injection
+func sanitizeTopic(input string) string {
+	// Remove control characters and newlines
+	topic := strings.Map(func(r rune) rune {
+		if r == '\n' || r == '\r' || r < 32 {
+			return -1
+		}
+		return r
+	}, input)
+
+	// Limit by runes (not bytes) for proper Unicode handling
+	runes := []rune(topic)
+	if len(runes) > 100 {
+		runes = runes[:100]
+	}
+	topic = string(runes)
+
+	// Remove characters that could break prompt structure
+	topic = strings.ReplaceAll(topic, "」", "")
+	topic = strings.ReplaceAll(topic, "「", "")
+	topic = strings.ReplaceAll(topic, "```", "")
+	topic = strings.ReplaceAll(topic, "---", "")
+
+	return strings.TrimSpace(topic)
+}
+
+// CoachFeedbackResponse represents the JSON structure from Claude for feedback
+type CoachFeedbackResponse struct {
+	NaturalAnswer string   `json:"natural_answer"`
+	Alternatives  []string `json:"alternatives"`
+	GrammarPoint  string   `json:"grammar_point"`
+	CommonMistake string   `json:"common_mistake"`
+	Encouragement string   `json:"encouragement"`
+}
+
+// GenerateCoachFeedback generates detailed feedback for the user's answer
+func (g *GeneratorService) GenerateCoachFeedback(ctx context.Context, japanese, userAnswer string, modelAnswers, acceptable []string, isCorrect bool) (*model.CoachFeedback, error) {
+	if !g.enabled {
+		return nil, fmt.Errorf("generator service is not enabled")
+	}
+
+	allAnswers := append(modelAnswers, acceptable...)
+	answersStr := strings.Join(allAnswers, "\", \"")
+
+	correctnessContext := "回答は文法的・意味的に正しいです。"
+	if !isCorrect {
+		correctnessContext = "回答には改善点があります。"
+	}
+
+	prompt := fmt.Sprintf(`あなたは「瞬間英作文コーチ」です。ITエンジニアの英語学習をサポートしています。
+
+【お題（日本語）】
+%s
+
+【ユーザーの回答】
+%s
+
+【模範解答】
+["%s"]
+
+【判定】
+%s
+
+以下の形式でフィードバックをJSON形式で出力してください（説明不要、JSONのみ）:
+{
+  "natural_answer": "最も自然な英語表現（1つ）",
+  "alternatives": ["言い換え表現1", "言い換え表現2"],
+  "grammar_point": "文法・型・ニュアンスのポイント（1〜2文）",
+  "common_mistake": "よくあるミスや注意点（なければ空文字）",
+  "encouragement": "励ましや次への一言（短く）"
+}
+
+注意:
+- ユーザーの回答を尊重しつつ、より自然な表現を提案
+- 冠詞・前置詞の軽微な違いは許容し、会話としてOKなら褒める
+- 技術用語（AWS, API, DB等）が含まれる場合は現場で使う表現を優先
+- 厳しすぎず、学習意欲を維持するトーンで`, japanese, userAnswer, answersStr, correctnessContext)
+
+	message, err := g.client.Messages.New(ctx, anthropic.MessageNewParams{
+		Model:     "claude-3-5-sonnet-20241022",
+		MaxTokens: 800,
+		Messages: []anthropic.MessageParam{
+			anthropic.NewUserMessage(anthropic.NewTextBlock(prompt)),
+		},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to call Claude API: %w", err)
+	}
+
+	// Extract text from response
+	var responseText string
+	for _, block := range message.Content {
+		if block.Type == "text" {
+			responseText = block.Text
+			break
+		}
+	}
+
+	// Parse JSON from response
+	var feedback CoachFeedbackResponse
+	if err := json.Unmarshal([]byte(responseText), &feedback); err != nil {
+		// Try to extract JSON from response
+		start := strings.Index(responseText, "{")
+		end := strings.LastIndex(responseText, "}")
+		if start >= 0 && end > start {
+			jsonStr := responseText[start : end+1]
+			if err := json.Unmarshal([]byte(jsonStr), &feedback); err != nil {
+				return nil, fmt.Errorf("failed to parse feedback: %w", err)
+			}
+		} else {
+			return nil, fmt.Errorf("failed to parse feedback: %w", err)
+		}
+	}
+
+	return &model.CoachFeedback{
+		NaturalAnswer: feedback.NaturalAnswer,
+		Alternatives:  feedback.Alternatives,
+		GrammarPoint:  feedback.GrammarPoint,
+		CommonMistake: feedback.CommonMistake,
+		Encouragement: feedback.Encouragement,
+	}, nil
 }

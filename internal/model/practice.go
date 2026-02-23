@@ -34,10 +34,20 @@ type PracticeQuestion struct {
 
 // AnswerResult represents the result of checking an answer
 type AnswerResult struct {
-	IsCorrect    bool     `json:"is_correct"`
-	UserInput    string   `json:"user_input"`
-	ModelAnswers []string `json:"model_answers"`
-	Acceptable   []string `json:"acceptable"`
-	MatchedWith  string   `json:"matched_with,omitempty"` // Which answer it matched (if correct)
-	Explanation  string   `json:"explanation,omitempty"`  // Brief explanation if needed
+	IsCorrect    bool           `json:"is_correct"`
+	UserInput    string         `json:"user_input"`
+	ModelAnswers []string       `json:"model_answers"`
+	Acceptable   []string       `json:"acceptable"`
+	MatchedWith  string         `json:"matched_with,omitempty"` // Which answer it matched (if correct)
+	Explanation  string         `json:"explanation,omitempty"`  // Brief explanation if needed
+	Feedback     *CoachFeedback `json:"feedback,omitempty"`     // Detailed coach feedback
+}
+
+// CoachFeedback represents detailed feedback from the AI coach
+type CoachFeedback struct {
+	NaturalAnswer  string   `json:"natural_answer"`  // ✅ 自然で良い解答
+	Alternatives   []string `json:"alternatives"`    // 🔁 言い換え（2つ）
+	GrammarPoint   string   `json:"grammar_point"`   // 🧠 ポイント（型・文法・ニュアンス）
+	CommonMistake  string   `json:"common_mistake"`  // 🪵 よくあるミス（あれば）
+	Encouragement  string   `json:"encouragement"`   // 励ましのコメント
 }
